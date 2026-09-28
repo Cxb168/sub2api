@@ -710,9 +710,9 @@ export default {
         rateLimitHint: '0 means unlimited. DingTalk allows 20 messages/minute per robot; exceeding it blocks the robot for 10 minutes.',
         includeResolved: 'Send recovery notifications',
         includeResolvedHint: 'Send another message when the group has usable accounts again (with recovery time and available count).',
-        atMobiles: '@ phone numbers',
+        atMobiles: "{'@'} phone numbers",
         atMobilesPlaceholder: 'Type a phone number and press Enter',
-        atAll: '@ everyone',
+        atAll: "{'@'} everyone",
         invalidMobile: 'Invalid phone number',
         ruleHint:
           'Note: also create one alert rule per group (OpenAI / Kimi) in "Alert Rules" — metric "Available accounts in group", threshold 0, and check "Send DingTalk notifications".',

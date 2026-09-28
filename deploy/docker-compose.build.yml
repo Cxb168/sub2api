@@ -1,0 +1,35 @@
+# =============================================================================
+# Sub2API Docker Compose - Build From Source Override
+# =============================================================================
+# 用途：不用预构建镜像，直接在本仓库里构建镜像再部署。
+#
+# 用法（在服务器的仓库目录中执行）：
+#   git clone https://github.com/Cxb168/sub2api.git
+#   cd sub2api/deploy
+#   cp .env.example .env && chmod 600 .env      # 可选：填写 POSTGRES_PASSWORD / JWT_SECRET 等
+#   mkdir -p data postgres_data redis_data
+#   docker compose -f docker-compose.local.yml -f docker-compose.build.yml up -d --build
+#
+# 说明：
+#   - build.context 指向仓库根目录，使用仓库根目录的 Dockerfile（多阶段：Node 构建前端 +
+#     Go 1.27 编译后端并 embed 前端）
+#   - 首次构建较慢（需拉取 golang/node 基础镜像并下载依赖）；之后有 Docker 层缓存会快很多
+#   - 升级：cd <repo> && git pull && cd deploy && docker compose -f docker-compose.local.yml -f docker-compose.build.yml up -d --build
+#   - 生成镜像名由 SUB2API_IMAGE 决定，默认 sub2api:local（写入 .env 可自定义 tag）
+# =============================================================================
+
+services:
+  sub2api:
+    # 注意：这里用独立的 SUB2API_BUILD_IMAGE，避免与 .env 里指向镜像仓库的 SUB2API_IMAGE 冲突
+    # （否则本地构建出来的镜像会被打上 ghcr 的 tag，之后 `compose pull` 可能把它覆盖掉）。
+    image: ${SUB2API_BUILD_IMAGE:-sub2api:local}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        # 构建期写入版本号/提交号；版本徽标与"检查更新"会显示它
+        VERSION: ${SUB2API_BUILD_VERSION:-dev}
+        COMMIT: ${SUB2API_BUILD_COMMIT:-local}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.google.cn}
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
