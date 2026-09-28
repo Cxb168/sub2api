@@ -211,6 +211,11 @@ func registerOpsRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		ops.GET("/email-notification/config", h.Admin.Ops.GetEmailNotificationConfig)
 		ops.PUT("/email-notification/config", h.Admin.Ops.UpdateEmailNotificationConfig)
 
+		// DingTalk notification config (DB-backed, redacted read)
+		ops.GET("/dingtalk-notification/config", h.Admin.Ops.GetDingTalkNotificationConfig)
+		ops.PUT("/dingtalk-notification/config", h.Admin.Ops.UpdateDingTalkNotificationConfig)
+		ops.POST("/dingtalk-notification/test", h.Admin.Ops.TestDingTalkNotification)
+
 		// Runtime settings (DB-backed)
 		runtime := ops.Group("/runtime")
 		{

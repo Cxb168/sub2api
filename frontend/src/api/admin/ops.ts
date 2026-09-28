@@ -704,6 +704,8 @@ export interface AlertRule {
   severity: OpsSeverity
   cooldown_minutes: number
   notify_email: boolean
+  // 命中该规则时是否推送钉钉（恢复消息由全局配置 include_resolved_alerts 控制）
+  notify_dingtalk: boolean
   filters?: Record<string, any>
   created_at?: string
   updated_at?: string
@@ -723,7 +725,33 @@ export interface AlertEvent {
   fired_at: string
   resolved_at?: string | null
   email_sent: boolean
+  dingtalk_sent: boolean
   created_at: string
+}
+
+// 钉钉告警通道配置（读取时为脱敏视图，secret 永不回显）。
+export interface DingTalkNotificationConfig {
+  enabled: boolean
+  webhook_url: string
+  webhook_configured: boolean
+  secret_configured: boolean
+  min_severity: AlertSeverity | ''
+  rate_limit_per_hour: number
+  include_resolved_alerts: boolean
+  at_mobiles: string[]
+  is_at_all: boolean
+}
+
+// 部分更新请求：webhook_url / secret 省略即"沿用旧值"。
+export interface DingTalkNotificationConfigUpdate {
+  enabled?: boolean
+  webhook_url?: string
+  secret?: string
+  min_severity?: AlertSeverity | ''
+  rate_limit_per_hour?: number
+  include_resolved_alerts?: boolean
+  at_mobiles?: string[]
+  is_at_all?: boolean
 }
 
 export interface EmailNotificationConfig {
@@ -1245,6 +1273,24 @@ export async function updateEmailNotificationConfig(config: EmailNotificationCon
   return data
 }
 
+// DingTalk notification config (DB-backed, redacted read)
+export async function getDingTalkNotificationConfig(): Promise<DingTalkNotificationConfig> {
+  const { data } = await apiClient.get<DingTalkNotificationConfig>('/admin/ops/dingtalk-notification/config')
+  return data
+}
+
+export async function updateDingTalkNotificationConfig(
+  config: DingTalkNotificationConfigUpdate
+): Promise<DingTalkNotificationConfig> {
+  const { data } = await apiClient.put<DingTalkNotificationConfig>('/admin/ops/dingtalk-notification/config', config)
+  return data
+}
+
+export async function testDingTalkNotification(): Promise<{ sent: boolean }> {
+  const { data } = await apiClient.post<{ sent: boolean }>('/admin/ops/dingtalk-notification/test', {})
+  return data
+}
+
 // Runtime settings (DB-backed)
 export async function getAlertRuntimeSettings(): Promise<OpsAlertRuntimeSettings> {
   const { data } = await apiClient.get<OpsAlertRuntimeSettings>('/admin/ops/runtime/alert')
@@ -1347,6 +1393,9 @@ export const opsAPI = {
   createAlertSilence,
   getEmailNotificationConfig,
   updateEmailNotificationConfig,
+  getDingTalkNotificationConfig,
+  updateDingTalkNotificationConfig,
+  testDingTalkNotification,
   getAlertRuntimeSettings,
   updateAlertRuntimeSettings,
   getRuntimeLogConfig,

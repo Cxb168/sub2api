@@ -31,6 +31,9 @@ type OpsAlertRule struct {
 
 	NotifyEmail bool `json:"notify_email"`
 
+	// NotifyDingTalk 控制该规则命中时是否推送钉钉；恢复消息由全局配置 include_resolved_alerts 控制。
+	NotifyDingTalk bool `json:"notify_dingtalk"`
+
 	Filters map[string]any `json:"filters,omitempty"`
 
 	LastTriggeredAt *time.Time `json:"last_triggered_at,omitempty"`
@@ -55,8 +58,9 @@ type OpsAlertEvent struct {
 	FiredAt    time.Time  `json:"fired_at"`
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 
-	EmailSent bool      `json:"email_sent"`
-	CreatedAt time.Time `json:"created_at"`
+	EmailSent    bool      `json:"email_sent"`
+	DingTalkSent bool      `json:"dingtalk_sent"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 type OpsAlertSilence struct {

@@ -437,6 +437,20 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
                 />
                 {{ row.email_sent ? t('admin.ops.alertEvents.table.emailSent') : t('admin.ops.alertEvents.table.emailIgnored') }}
               </span>
+              <span class="inline-flex items-center gap-1">
+                <Icon
+                  v-if="row.dingtalk_sent"
+                  name="checkCircle"
+                  size="xs"
+                  class="text-green-600 dark:text-green-400"
+                />
+                <Icon v-else name="ban" size="xs" class="text-gray-400 dark:text-gray-500" />
+                {{
+                  row.dingtalk_sent
+                    ? t('admin.ops.alertEvents.table.dingtalkSent')
+                    : t('admin.ops.alertEvents.table.dingtalkIgnored')
+                }}
+              </span>
             </div>
             <div class="text-[11px] text-gray-400 dark:text-gray-500">{{ formatDimensionsSummary(row) }}</div>
           </div>
@@ -467,6 +481,9 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
               </th>
               <th class="px-4 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                 {{ t('admin.ops.alertEvents.table.email') }}
+              </th>
+              <th class="px-4 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                {{ t('admin.ops.alertEvents.table.dingtalk') }}
               </th>
             </tr>
           </thead>
@@ -528,6 +545,31 @@ const empty = computed(() => events.value.length === 0 && !loading.value)
                   />
                   <span class="text-[11px] font-bold text-gray-600 dark:text-gray-300">
                     {{ row.email_sent ? t('admin.ops.alertEvents.table.emailSent') : t('admin.ops.alertEvents.table.emailIgnored') }}
+                  </span>
+                </span>
+              </td>
+              <td class="whitespace-nowrap px-4 py-3 text-right text-xs">
+                <span
+                  class="inline-flex items-center justify-end gap-1.5"
+                  :title="
+                    row.dingtalk_sent
+                      ? t('admin.ops.alertEvents.table.dingtalkSent')
+                      : t('admin.ops.alertEvents.table.dingtalkIgnored')
+                  "
+                >
+                  <Icon
+                    v-if="row.dingtalk_sent"
+                    name="checkCircle"
+                    size="sm"
+                    class="text-green-600 dark:text-green-400"
+                  />
+                  <Icon v-else name="ban" size="sm" class="text-gray-400 dark:text-gray-500" />
+                  <span class="text-[11px] font-bold text-gray-600 dark:text-gray-300">
+                    {{
+                      row.dingtalk_sent
+                        ? t('admin.ops.alertEvents.table.dingtalkSent')
+                        : t('admin.ops.alertEvents.table.dingtalkIgnored')
+                    }}
                   </span>
                 </span>
               </td>

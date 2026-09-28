@@ -38,6 +38,47 @@ type OpsEmailNotificationConfigUpdateRequest struct {
 	Report *OpsEmailReportConfig `json:"report"`
 }
 
+// OpsDingTalkNotificationConfig 是运维告警的钉钉机器人通道配置（存 settings 表 JSON）。
+//
+// 说明：webhook_url 与 secret 以明文 JSON 存在 settings 表（与现有 smtp_password 的存储方式一致），
+// 读接口一律返回脱敏视图 OpsDingTalkNotificationConfigView，日志与审计也必须脱敏。
+type OpsDingTalkNotificationConfig struct {
+	Enabled               bool     `json:"enabled"`
+	WebhookURL            string   `json:"webhook_url"`
+	Secret                string   `json:"secret"`
+	MinSeverity           string   `json:"min_severity"`
+	RateLimitPerHour      int      `json:"rate_limit_per_hour"`
+	IncludeResolvedAlerts bool     `json:"include_resolved_alerts"`
+	AtMobiles             []string `json:"at_mobiles"`
+	AtAll                 bool     `json:"is_at_all"`
+}
+
+// OpsDingTalkNotificationConfigUpdateRequest 支持部分更新：
+// webhook_url / secret 传空字符串或省略都表示"沿用旧值"，避免前端回显脱敏值后把真实凭据覆盖掉。
+type OpsDingTalkNotificationConfigUpdateRequest struct {
+	Enabled               *bool    `json:"enabled"`
+	WebhookURL            *string  `json:"webhook_url"`
+	Secret                *string  `json:"secret"`
+	MinSeverity           *string  `json:"min_severity"`
+	RateLimitPerHour      *int     `json:"rate_limit_per_hour"`
+	IncludeResolvedAlerts *bool    `json:"include_resolved_alerts"`
+	AtMobiles             []string `json:"at_mobiles"`
+	AtAll                 *bool    `json:"is_at_all"`
+}
+
+// OpsDingTalkNotificationConfigView 是对外（管理端读取）的脱敏视图。
+type OpsDingTalkNotificationConfigView struct {
+	Enabled               bool     `json:"enabled"`
+	WebhookURL            string   `json:"webhook_url"`
+	WebhookConfigured     bool     `json:"webhook_configured"`
+	SecretConfigured      bool     `json:"secret_configured"`
+	MinSeverity           string   `json:"min_severity"`
+	RateLimitPerHour      int      `json:"rate_limit_per_hour"`
+	IncludeResolvedAlerts bool     `json:"include_resolved_alerts"`
+	AtMobiles             []string `json:"at_mobiles"`
+	AtAll                 bool     `json:"is_at_all"`
+}
+
 type OpsDistributedLockSettings struct {
 	Enabled    bool   `json:"enabled"`
 	Key        string `json:"key"`

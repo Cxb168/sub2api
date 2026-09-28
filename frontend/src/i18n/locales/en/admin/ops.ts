@@ -477,7 +477,10 @@ export default {
           dimensions: 'Dimensions',
           email: 'Email Sent',
           emailSent: 'Sent',
-          emailIgnored: 'Ignored'
+          emailIgnored: 'Ignored',
+          dingtalk: 'DingTalk',
+          dingtalkSent: 'Sent',
+          dingtalkIgnored: 'Not sent'
         }
       },
       alertRules: {
@@ -563,7 +566,10 @@ export default {
           sustained: 'Sustained (samples)',
           cooldown: 'Cooldown (minutes)',
           enabled: 'Enabled',
-          notifyEmail: 'Send email notifications'
+          notifyEmail: 'Send email notifications',
+          notifyDingTalk: 'Send DingTalk notifications',
+          notifyDingTalkHint:
+            'Push this rule to DingTalk. Whether a recovery message is also sent is controlled by the recovery switch in the DingTalk notification config.'
         },
         validation: {
           title: 'Please fix the following issues',
@@ -687,6 +693,33 @@ export default {
           digestMinCountRange: 'Min errors for digest must be a number ≥ 0',
           accountHealthThresholdRange: 'Account health threshold must be between 0 and 100'
         }
+      },
+      dingtalk: {
+        title: 'DingTalk Notification',
+        enable: 'Enable DingTalk notifications',
+        enableHint: 'When enabled, alert rules with "Send DingTalk notifications" checked will push to the robot below.',
+        webhook: 'Webhook URL',
+        webhookPlaceholder: 'https://oapi.dingtalk.com/robot/send?access_token=...',
+        webhookHint:
+          'Only the official DingTalk endpoint is accepted. After saving, a masked value is shown; leave it untouched to keep the existing one.',
+        secret: 'Signing secret',
+        secretPlaceholder: 'Signing secret (required when the robot uses "sign" security)',
+        secretKeep: 'Configured — leave empty to keep it',
+        secretHint: 'The secret is never returned; leaving it empty keeps the saved value.',
+        rateLimitPerHour: 'Max messages per hour',
+        rateLimitHint: '0 means unlimited. DingTalk allows 20 messages/minute per robot; exceeding it blocks the robot for 10 minutes.',
+        includeResolved: 'Send recovery notifications',
+        includeResolvedHint: 'Send another message when the group has usable accounts again (with recovery time and available count).',
+        atMobiles: '@ phone numbers',
+        atMobilesPlaceholder: 'Type a phone number and press Enter',
+        atAll: '@ everyone',
+        invalidMobile: 'Invalid phone number',
+        ruleHint:
+          'Note: also create one alert rule per group (OpenAI / Kimi) in "Alert Rules" — metric "Available accounts in group", threshold 0, and check "Send DingTalk notifications".',
+        test: 'Send test message',
+        testing: 'Sending...',
+        testSuccess: 'Test message sent — please check the DingTalk group',
+        testFailed: 'Failed to send the test message'
       },
       settings: {
         title: 'Ops Monitoring Settings',

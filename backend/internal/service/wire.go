@@ -559,7 +559,15 @@ func ProvideOpsAlertEvaluatorService(
 	cfg *config.Config,
 	proxyRepo ProxyRepository,
 ) *OpsAlertEvaluatorService {
+	// 钉钉发送器在这里创建，并同时注入 OpsService（供"测试消息"接口复用），
+	// 保证两个入口共用同一个逐小时限流窗口。
+	dingTalk := NewDingTalkNotifyService()
+	if opsService != nil {
+		opsService.SetDingTalkNotifier(dingTalk)
+	}
+
 	svc := NewOpsAlertEvaluatorService(opsService, opsRepo, emailService, redisClient, cfg, proxyRepo)
+	svc.SetDingTalkNotifyService(dingTalk)
 	svc.Start()
 	return svc
 }

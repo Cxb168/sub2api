@@ -56,6 +56,72 @@ func (h *OpsHandler) UpdateEmailNotificationConfig(c *gin.Context) {
 	response.Success(c, updated)
 }
 
+// GetDingTalkNotificationConfig returns Ops DingTalk notification config (redacted).
+// GET /api/v1/admin/ops/dingtalk-notification/config
+func (h *OpsHandler) GetDingTalkNotificationConfig(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	cfg, err := h.opsService.GetDingTalkNotificationConfigView(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, "Failed to get dingtalk notification config")
+		return
+	}
+	response.Success(c, cfg)
+}
+
+// UpdateDingTalkNotificationConfig updates Ops DingTalk notification config.
+// PUT /api/v1/admin/ops/dingtalk-notification/config
+func (h *OpsHandler) UpdateDingTalkNotificationConfig(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	var req service.OpsDingTalkNotificationConfigUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request body")
+		return
+	}
+
+	updated, err := h.opsService.UpdateDingTalkNotificationConfig(c.Request.Context(), &req)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	response.Success(c, updated)
+}
+
+// TestDingTalkNotification sends a test message using the saved config.
+// POST /api/v1/admin/ops/dingtalk-notification/test
+func (h *OpsHandler) TestDingTalkNotification(c *gin.Context) {
+	if h.opsService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Ops service not available")
+		return
+	}
+	if err := h.opsService.RequireMonitoringEnabled(c.Request.Context()); err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	if err := h.opsService.SendDingTalkTestMessage(c.Request.Context()); err != nil {
+		// 不回显 webhook/secret；只把钉钉返回的错误码发出去，便于排查加签/限频。
+		response.Error(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"sent": true})
+}
+
 // GetAlertRuntimeSettings returns Ops alert evaluator runtime settings (DB-backed).
 // GET /api/v1/admin/ops/runtime/alert
 func (h *OpsHandler) GetAlertRuntimeSettings(c *gin.Context) {

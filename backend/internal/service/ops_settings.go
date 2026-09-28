@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 
@@ -192,6 +193,227 @@ func validateOpsEmailNotificationConfig(cfg *OpsEmailNotificationConfig) error {
 		return errors.New("report.account_health_error_rate_threshold must be between 0 and 100")
 	}
 	return nil
+}
+
+// =========================
+// DingTalk notification config
+// =========================
+
+func defaultOpsDingTalkNotificationConfig() *OpsDingTalkNotificationConfig {
+	return &OpsDingTalkNotificationConfig{
+		Enabled:               false,
+		WebhookURL:            "",
+		Secret:                "",
+		MinSeverity:           "",
+		RateLimitPerHour:      0,
+		IncludeResolvedAlerts: true,
+		AtMobiles:             []string{},
+		AtAll:                 false,
+	}
+}
+
+// GetDingTalkNotificationConfig 返回完整配置（含明文凭据），仅供发送链路内部使用。
+func (s *OpsService) GetDingTalkNotificationConfig(ctx context.Context) (*OpsDingTalkNotificationConfig, error) {
+	defaultCfg := defaultOpsDingTalkNotificationConfig()
+	if s == nil || s.settingRepo == nil {
+		return defaultCfg, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	raw, err := s.settingRepo.GetValue(ctx, SettingKeyOpsDingTalkNotificationConfig)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			if b, mErr := json.Marshal(defaultCfg); mErr == nil {
+				_ = s.settingRepo.Set(ctx, SettingKeyOpsDingTalkNotificationConfig, string(b))
+			}
+			return defaultCfg, nil
+		}
+		return nil, err
+	}
+
+	cfg := &OpsDingTalkNotificationConfig{}
+	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
+		// Corrupted JSON should not break ops UI; fall back to defaults.
+		return defaultCfg, nil
+	}
+	normalizeOpsDingTalkNotificationConfig(cfg)
+	return cfg, nil
+}
+
+// GetDingTalkNotificationConfigView 返回脱敏视图：只暴露凭据"是否已配置"。
+func (s *OpsService) GetDingTalkNotificationConfigView(ctx context.Context) (*OpsDingTalkNotificationConfigView, error) {
+	cfg, err := s.GetDingTalkNotificationConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return opsDingTalkConfigToView(cfg), nil
+}
+
+// UpdateDingTalkNotificationConfig 支持部分更新；webhook/secret 留空表示沿用旧值。
+func (s *OpsService) UpdateDingTalkNotificationConfig(ctx context.Context, req *OpsDingTalkNotificationConfigUpdateRequest) (*OpsDingTalkNotificationConfigView, error) {
+	if s == nil || s.settingRepo == nil {
+		return nil, errors.New("setting repository not initialized")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if req == nil {
+		return nil, errors.New("invalid request")
+	}
+
+	cfg, err := s.GetDingTalkNotificationConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.Enabled != nil {
+		cfg.Enabled = *req.Enabled
+	}
+	if req.WebhookURL != nil {
+		// 前端读取到的是脱敏值（access_token=***xxxx）；原样回传时表示"未修改"，
+		// 不能被当成新地址写库，否则真实 token 会被覆盖。
+		if v := strings.TrimSpace(*req.WebhookURL); v != "" && !strings.Contains(v, "***") {
+			cfg.WebhookURL = v
+		}
+	}
+	if req.Secret != nil {
+		if v := strings.TrimSpace(*req.Secret); v != "" {
+			cfg.Secret = v
+		}
+	}
+	if req.MinSeverity != nil {
+		cfg.MinSeverity = strings.TrimSpace(*req.MinSeverity)
+	}
+	if req.RateLimitPerHour != nil {
+		cfg.RateLimitPerHour = *req.RateLimitPerHour
+	}
+	if req.IncludeResolvedAlerts != nil {
+		cfg.IncludeResolvedAlerts = *req.IncludeResolvedAlerts
+	}
+	if req.AtMobiles != nil {
+		cfg.AtMobiles = req.AtMobiles
+	}
+	if req.AtAll != nil {
+		cfg.AtAll = *req.AtAll
+	}
+
+	if err := validateOpsDingTalkNotificationConfig(cfg); err != nil {
+		return nil, err
+	}
+
+	normalizeOpsDingTalkNotificationConfig(cfg)
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.settingRepo.Set(ctx, SettingKeyOpsDingTalkNotificationConfig, string(raw)); err != nil {
+		return nil, err
+	}
+	return opsDingTalkConfigToView(cfg), nil
+}
+
+func normalizeOpsDingTalkNotificationConfig(cfg *OpsDingTalkNotificationConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.WebhookURL = strings.TrimSpace(cfg.WebhookURL)
+	cfg.Secret = strings.TrimSpace(cfg.Secret)
+	cfg.MinSeverity = strings.TrimSpace(cfg.MinSeverity)
+
+	mobiles := make([]string, 0, len(cfg.AtMobiles))
+	seen := make(map[string]struct{}, len(cfg.AtMobiles))
+	for _, mobile := range cfg.AtMobiles {
+		v := strings.TrimSpace(mobile)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		mobiles = append(mobiles, v)
+	}
+	cfg.AtMobiles = mobiles
+}
+
+func validateOpsDingTalkNotificationConfig(cfg *OpsDingTalkNotificationConfig) error {
+	if cfg == nil {
+		return errors.New("invalid config")
+	}
+	if cfg.RateLimitPerHour < 0 {
+		return errors.New("rate_limit_per_hour must be >= 0")
+	}
+	switch strings.TrimSpace(cfg.MinSeverity) {
+	case "", "critical", "warning", "info":
+	default:
+		return errors.New("min_severity must be one of: critical, warning, info, or empty")
+	}
+	if len(cfg.AtMobiles) > 20 {
+		return errors.New("at_mobiles must contain at most 20 entries")
+	}
+	for _, mobile := range cfg.AtMobiles {
+		v := strings.TrimSpace(mobile)
+		if v == "" {
+			continue
+		}
+		if len(v) < 6 || len(v) > 20 {
+			return errors.New("at_mobiles entries must be 6-20 characters")
+		}
+	}
+	// webhook 校验放在服务层（DingTalkNotifyService）复用同一份白名单规则：
+	// 允许"未配置"（此时只是不发送），但一旦填写就必须是官方地址。
+	if strings.TrimSpace(cfg.WebhookURL) != "" {
+		if err := ValidateDingTalkWebhookURL(cfg.WebhookURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func opsDingTalkConfigToView(cfg *OpsDingTalkNotificationConfig) *OpsDingTalkNotificationConfigView {
+	if cfg == nil {
+		cfg = defaultOpsDingTalkNotificationConfig()
+	}
+	mobiles := cfg.AtMobiles
+	if mobiles == nil {
+		mobiles = []string{}
+	}
+	return &OpsDingTalkNotificationConfigView{
+		Enabled:               cfg.Enabled,
+		WebhookURL:            MaskDingTalkWebhookURL(cfg.WebhookURL),
+		WebhookConfigured:     strings.TrimSpace(cfg.WebhookURL) != "",
+		SecretConfigured:      strings.TrimSpace(cfg.Secret) != "",
+		MinSeverity:           cfg.MinSeverity,
+		RateLimitPerHour:      cfg.RateLimitPerHour,
+		IncludeResolvedAlerts: cfg.IncludeResolvedAlerts,
+		AtMobiles:             mobiles,
+		AtAll:                 cfg.AtAll,
+	}
+}
+
+// MaskDingTalkWebhookURL 只保留 access_token 的尾部若干位，其余打码；空值返回空串。
+// 手工拼接而不重新 url.Encode，避免界面上出现 %2A%2A%2A 这种难读的脱敏值。
+func MaskDingTalkWebhookURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "***"
+	}
+	token := parsed.Query().Get("access_token")
+	if token == "" {
+		return parsed.Scheme + "://" + parsed.Host + parsed.Path + "?access_token=***"
+	}
+	if len(token) > 4 {
+		token = "***" + token[len(token)-4:]
+	} else {
+		token = "***"
+	}
+	return parsed.Scheme + "://" + parsed.Host + parsed.Path + "?access_token=" + token
 }
 
 // =========================

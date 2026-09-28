@@ -477,7 +477,10 @@ export default {
           dimensions: '维度',
           email: '邮件已发送',
           emailSent: '已发送',
-          emailIgnored: '已忽略'
+          emailIgnored: '已忽略',
+          dingtalk: '钉钉',
+          dingtalkSent: '已发送',
+          dingtalkIgnored: '未发送'
         }
       },
       alertRules: {
@@ -563,7 +566,9 @@ export default {
           sustained: '连续样本数（每分钟）',
           cooldown: '冷却期（分钟）',
           enabled: '启用',
-          notifyEmail: '发送邮件通知'
+          notifyEmail: '发送邮件通知',
+          notifyDingTalk: '发送钉钉通知',
+          notifyDingTalkHint: '命中该规则时推送钉钉；分组恢复时是否再发一条由「钉钉通知配置」里的恢复通知开关决定。'
         },
         validation: {
           title: '请先修正以下问题',
@@ -687,6 +692,31 @@ export default {
           digestMinCountRange: '错误摘要最小数量必须为 ≥ 0 的数字',
           accountHealthThresholdRange: '账号健康错误率阈值必须在 0 到 100 之间'
         }
+      },
+      dingtalk: {
+        title: '钉钉通知配置',
+        enable: '启用钉钉通知',
+        enableHint: '开启后，勾选了「发送钉钉通知」的告警规则会把消息推到下面的机器人。',
+        webhook: 'Webhook 地址',
+        webhookPlaceholder: 'https://oapi.dingtalk.com/robot/send?access_token=...',
+        webhookHint: '只允许钉钉官方地址；保存后再次打开会显示脱敏值，不改动即沿用原值。',
+        secret: '加签 Secret',
+        secretPlaceholder: '填写加签 Secret（安全设置选「加签」时必填）',
+        secretKeep: '已配置，留空表示不修改',
+        secretHint: 'Secret 不会回显；留空即沿用已保存的值。',
+        rateLimitPerHour: '每小时发送上限',
+        rateLimitHint: '0 表示不限制；钉钉官方限制为单机器人 20 条/分钟，超限会被封禁 10 分钟。',
+        includeResolved: '发送恢复通知',
+        includeResolvedHint: '分组恢复可用时再推一条恢复消息（含恢复时间与当前可用账号数）。',
+        atMobiles: '@ 手机号',
+        atMobilesPlaceholder: '输入手机号后回车添加',
+        atAll: '@ 所有人',
+        invalidMobile: '手机号格式不正确',
+        ruleHint: '提示：还需要在「告警规则」里为 OpenAI / Kimi 分组各建一条规则（指标选「分组可用账号数」、阈值 0、勾选「发送钉钉通知」）。',
+        test: '发送测试消息',
+        testing: '发送中...',
+        testSuccess: '测试消息已发送，请查看钉钉群',
+        testFailed: '测试消息发送失败'
       },
       settings: {
         title: '运维监控设置',

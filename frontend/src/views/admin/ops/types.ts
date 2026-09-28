@@ -12,6 +12,8 @@ export type {
   MetricType,
   Operator,
   EmailNotificationConfig,
+  DingTalkNotificationConfig,
+  DingTalkNotificationConfigUpdate,
   OpsDistributedLockSettings,
   OpsAlertRuntimeSettings,
   OpsMetricThresholds,

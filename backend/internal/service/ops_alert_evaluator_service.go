@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -35,6 +37,7 @@ type OpsAlertEvaluatorService struct {
 	opsService   *OpsService
 	opsRepo      OpsRepository
 	emailService *EmailService
+	dingtalk     *DingTalkNotifyService
 	proxyRepo    ProxyRepository
 
 	redisClient *redis.Client
@@ -81,6 +84,13 @@ func NewOpsAlertEvaluatorService(
 		ruleStates:   map[int64]*opsAlertRuleState{},
 		emailLimiter: newSlidingWindowLimiter(0, time.Hour),
 	}
+}
+
+func (s *OpsAlertEvaluatorService) SetDingTalkNotifyService(svc *DingTalkNotifyService) {
+	if s == nil {
+		return
+	}
+	s.dingtalk = svc
 }
 
 func (s *OpsAlertEvaluatorService) Start() {
@@ -199,6 +209,7 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 	eventsCreated := 0
 	eventsResolved := 0
 	emailsSent := 0
+	dingtalksSent := 0
 
 	now := time.Now().UTC()
 	safeEnd := now.Truncate(time.Minute)
@@ -295,6 +306,9 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 				if s.maybeSendAlertEmail(ctx, runtimeCfg, rule, created) {
 					emailsSent++
 				}
+				if s.maybeSendDingTalk(ctx, runtimeCfg, rule, created, false) {
+					dingtalksSent++
+				}
 			}
 			continue
 		}
@@ -306,11 +320,19 @@ func (s *OpsAlertEvaluatorService) evaluateOnce(interval time.Duration) {
 				logger.LegacyPrintf("service.ops_alert_evaluator", "[OpsAlertEvaluator] resolve event failed (event=%d): %v", activeEvent.ID, err)
 			} else {
 				eventsResolved++
+				// 恢复通知：上游原先只改状态、不发任何通知；这里补上钉钉恢复消息
+				// （邮件侧仍保持原行为，由全局配置 include_resolved_alerts 控制是否发钉钉）。
+				resolvedEvent := *activeEvent
+				resolvedEvent.Status = OpsAlertStatusResolved
+				resolvedEvent.ResolvedAt = &resolvedAt
+				if s.maybeSendDingTalk(ctx, runtimeCfg, rule, &resolvedEvent, true) {
+					dingtalksSent++
+				}
 			}
 		}
 	}
 
-	result := truncateString(fmt.Sprintf("rules=%d enabled=%d evaluated=%d created=%d resolved=%d emails_sent=%d", rulesTotal, rulesEnabled, rulesEvaluated, eventsCreated, eventsResolved, emailsSent), 2048)
+	result := truncateString(fmt.Sprintf("rules=%d enabled=%d evaluated=%d created=%d resolved=%d emails_sent=%d dingtalks_sent=%d", rulesTotal, rulesEnabled, rulesEvaluated, eventsCreated, eventsResolved, emailsSent, dingtalksSent), 2048)
 	s.recordHeartbeatSuccess(runAt, time.Since(startedAt), result)
 }
 
@@ -745,6 +767,220 @@ func (s *OpsAlertEvaluatorService) maybeSendAlertEmail(ctx context.Context, runt
 		_ = s.opsRepo.UpdateAlertEventEmailSent(context.Background(), event.ID, true)
 	}
 	return anySent
+}
+
+// maybeSendDingTalk 把一次告警（resolved=false）或恢复（resolved=true）推送到钉钉机器人。
+// 语义与邮件通道对齐：级别过滤、静默、逐小时限流；并且同一事件只投递一次。
+func (s *OpsAlertEvaluatorService) maybeSendDingTalk(
+	ctx context.Context,
+	runtimeCfg *OpsAlertRuntimeSettings,
+	rule *OpsAlertRule,
+	event *OpsAlertEvent,
+	resolved bool,
+) bool {
+	if s == nil || s.dingtalk == nil || s.opsService == nil || rule == nil || event == nil {
+		return false
+	}
+	if !rule.NotifyDingTalk {
+		return false
+	}
+	// 触发消息只在首次创建事件时发送；恢复消息在 status 从 firing 变为 resolved 时发送一次。
+	if !resolved && event.DingTalkSent {
+		return false
+	}
+
+	cfg, err := s.opsService.GetDingTalkNotificationConfig(ctx)
+	if err != nil || cfg == nil || !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
+		return false
+	}
+	if resolved && !cfg.IncludeResolvedAlerts {
+		return false
+	}
+	if !shouldSendOpsAlertEmailByMinSeverity(strings.TrimSpace(cfg.MinSeverity), strings.TrimSpace(rule.Severity)) {
+		return false
+	}
+	if !resolved && runtimeCfg != nil && runtimeCfg.Silencing.Enabled {
+		if isOpsAlertSilenced(time.Now().UTC(), rule, event, runtimeCfg.Silencing) {
+			return false
+		}
+	}
+
+	s.dingtalk.SetLimit(cfg.RateLimitPerHour)
+	if !s.dingtalk.Allow(time.Now().UTC()) {
+		logger.LegacyPrintf("service.ops_alert_evaluator",
+			"[OpsAlertEvaluator] dingtalk rate limited (rule=%d event=%d)", rule.ID, event.ID)
+		return false
+	}
+
+	title, text := s.buildOpsAlertDingTalkContent(ctx, rule, event, resolved)
+	if err := s.dingtalk.SendMarkdown(ctx, cfg, title, text); err != nil {
+		// 不记录 webhook 明文，只记规则/事件与错误。
+		logger.LegacyPrintf("service.ops_alert_evaluator",
+			"[OpsAlertEvaluator] dingtalk send failed (rule=%d event=%d resolved=%t): %v", rule.ID, event.ID, resolved, err)
+		return false
+	}
+
+	if event.ID > 0 {
+		if uerr := s.opsRepo.UpdateAlertEventDingTalkSent(context.Background(), event.ID, true); uerr != nil {
+			logger.LegacyPrintf("service.ops_alert_evaluator",
+				"[OpsAlertEvaluator] mark dingtalk sent failed (event=%d): %v", event.ID, uerr)
+		}
+	}
+	return true
+}
+
+// buildOpsAlertDingTalkContent 生成钉钉 markdown 的标题与正文。
+//
+// 分组类规则（group_available_accounts 等）会额外拉取账号可用性明细，
+// 逐账号给出"不可用原因 + 预计恢复时间"——这是本需求的核心信息。
+func (s *OpsAlertEvaluatorService) buildOpsAlertDingTalkContent(
+	ctx context.Context,
+	rule *OpsAlertRule,
+	event *OpsAlertEvent,
+	resolved bool,
+) (string, string) {
+	ruleName := strings.TrimSpace(rule.Name)
+	severity := strings.TrimSpace(rule.Severity)
+	headline := "🔴 账号池告警"
+	titlePrefix := "【告警】"
+	if resolved {
+		headline = "🟢 账号池恢复"
+		titlePrefix = "【恢复】"
+	}
+	title := fmt.Sprintf("%s%s", titlePrefix, ruleName)
+
+	platform, groupID, _ := parseOpsAlertRuleScope(rule.Filters)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "### %s：%s\n", headline, ruleName)
+	if severity != "" {
+		fmt.Fprintf(&b, "> 级别：%s", severity)
+	}
+	if platform != "" {
+		fmt.Fprintf(&b, "　平台：%s", platform)
+	}
+	if groupID != nil && *groupID > 0 {
+		fmt.Fprintf(&b, "　分组 id：%d", *groupID)
+	}
+	fmt.Fprintf(&b, "　时间：%s\n", time.Now().In(timezone.Location()).Format("2006-01-02 15:04:05"))
+
+	// 分组明细
+	var detail *OpsAccountAvailability
+	if groupID != nil && *groupID > 0 && s.opsService != nil {
+		if avail, err := s.opsService.GetAccountAvailability(ctx, platform, groupID); err == nil && avail != nil {
+			detail = avail
+		}
+	}
+	if detail != nil && detail.Group != nil {
+		fmt.Fprintf(&b, "\n**分组 %s：可用 %d / 共 %d**\n\n",
+			escapeDingTalkMarkdownText(detail.Group.GroupName), detail.Group.AvailableCount, detail.Group.TotalAccounts)
+	}
+	if detail != nil {
+		lines := buildAccountAvailabilityLines(detail.Accounts, resolved)
+		if len(lines) > 0 {
+			b.WriteString(strings.Join(lines, "\n"))
+			b.WriteString("\n")
+		}
+	}
+
+	// 指标与规则说明
+	if event.MetricValue != nil {
+		fmt.Fprintf(&b, "\n**当前指标**：%s %s %.2f（阈值 %.2f）\n",
+			strings.TrimSpace(rule.MetricType), strings.TrimSpace(rule.Operator), *event.MetricValue, rule.Threshold)
+	}
+	if desc := strings.TrimSpace(rule.Description); desc != "" {
+		fmt.Fprintf(&b, "**规则说明**：%s\n", escapeDingTalkMarkdownText(desc))
+	}
+	if resolved {
+		b.WriteString("\n分组内已有账号恢复可调度，服务恢复正常。")
+	} else {
+		b.WriteString("\n分组内账号全部不可用，请及时充值或补充账号。")
+	}
+	return title, b.String()
+}
+
+// buildAccountAvailabilityLines 逐账号渲染"原因 + 预计恢复时间"。
+func buildAccountAvailabilityLines(accounts map[int64]*AccountAvailability, resolved bool) []string {
+	if len(accounts) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(accounts))
+	for id := range accounts {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		acc := accounts[id]
+		if acc == nil {
+			continue
+		}
+		name := escapeDingTalkMarkdownText(acc.AccountName)
+		if name == "" {
+			name = fmt.Sprintf("account-%d", acc.AccountID)
+		}
+		lines = append(lines, fmt.Sprintf("- **%s**（id=%d）：%s", name, acc.AccountID,
+			describeAccountAvailability(acc, resolved)))
+	}
+	return lines
+}
+
+// describeAccountAvailability 输出单个账号的状态描述，包含预计恢复时间。
+func describeAccountAvailability(acc *AccountAvailability, resolved bool) string {
+	if acc == nil {
+		return "状态未知"
+	}
+	if acc.IsAvailable {
+		return "已恢复可调度"
+	}
+	if resolved {
+		// 恢复消息里仍列出未恢复的账号，便于判断是否部分恢复。
+		return "仍未恢复（" + accountUnavailableReason(acc) + "）"
+	}
+	return accountUnavailableReason(acc)
+}
+
+func accountUnavailableReason(acc *AccountAvailability) string {
+	if acc == nil {
+		return "状态未知"
+	}
+	now := time.Now()
+	switch {
+	case acc.IsRateLimited && acc.RateLimitResetAt != nil:
+		return fmt.Sprintf("上游限流（额度耗尽），预计 **%s** 重置",
+			acc.RateLimitResetAt.In(timezone.Location()).Format("2006-01-02 15:04:05"))
+	case acc.IsRateLimited:
+		return "上游限流（额度耗尽），恢复时间未知"
+	case acc.IsOverloaded && acc.OverloadUntil != nil:
+		return fmt.Sprintf("上游过载，预计 **%s** 恢复",
+			acc.OverloadUntil.In(timezone.Location()).Format("2006-01-02 15:04:05"))
+	case acc.TempUnschedulableUntil != nil && now.Before(*acc.TempUnschedulableUntil):
+		return fmt.Sprintf("用量触达停调阈值，预计 **%s** 恢复",
+			acc.TempUnschedulableUntil.In(timezone.Location()).Format("2006-01-02 15:04:05"))
+	case acc.HasError:
+		msg := escapeDingTalkMarkdownText(strings.TrimSpace(acc.ErrorMessage))
+		if msg == "" {
+			msg = "未知错误"
+		}
+		return "账号状态异常：" + msg
+	case strings.TrimSpace(acc.Status) != "" && !strings.EqualFold(strings.TrimSpace(acc.Status), StatusActive):
+		return fmt.Sprintf("账号状态为 %s", escapeDingTalkMarkdownText(acc.Status))
+	default:
+		return "账号不可调度（不在候选池）"
+	}
+}
+
+// escapeDingTalkMarkdownText 去掉换行并转义 markdown 控制字符，避免账号名/错误信息破坏排版。
+func escapeDingTalkMarkdownText(s string) string {
+	replacer := strings.NewReplacer(
+		"\r", " ",
+		"\n", " ",
+		"#", "＃",
+		"*", "＊",
+		"`", "＇",
+	)
+	return strings.TrimSpace(replacer.Replace(s))
 }
 
 func opsAlertEmailVariables(rule *OpsAlertRule, event *OpsAlertEvent) map[string]string {

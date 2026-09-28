@@ -67,6 +67,10 @@ type OpsService struct {
 	// 解耦避免 OpsService -> OpsCleanupService 的硬依赖（cleanup 也读 settings，会循环）。
 	cleanupReloader CleanupReloader
 
+	// dingTalkNotifier 由 wire 注入；告警评估器与"测试消息"接口共用同一个实例，
+	// 因此逐小时限流（钉钉 20 条/分钟会被封禁）在两个入口之间是统一计算的。
+	dingTalkNotifier *DingTalkNotifyService
+
 	// quotaAutoPauseSink 由 wire 注入（通常是 SettingService.SetOpenAIQuotaAutoPauseSettings）。
 	// UpdateOpsAdvancedSettings 写入新配置后调用，把最新的 quota auto-pause 全局默认阈值
 	// 立即同步到调度热路径读取的内存缓存，避免下次请求才能感知新值。
@@ -98,6 +102,48 @@ func (s *OpsService) SetCleanupReloader(r CleanupReloader) {
 		return
 	}
 	s.cleanupReloader = r
+}
+
+// SetDingTalkNotifier 由 wire 注入钉钉发送器（告警评估器与测试接口共用实例）。
+func (s *OpsService) SetDingTalkNotifier(svc *DingTalkNotifyService) {
+	if s == nil {
+		return
+	}
+	s.dingTalkNotifier = svc
+}
+
+// DingTalkNotifier 返回已注入的钉钉发送器，未注入时为 nil。
+func (s *OpsService) DingTalkNotifier() *DingTalkNotifyService {
+	if s == nil {
+		return nil
+	}
+	return s.dingTalkNotifier
+}
+
+// SendDingTalkTestMessage 发送测试消息（管理端"测试"按钮）。
+// 它使用已保存的配置；调用方需先保存配置。
+func (s *OpsService) SendDingTalkTestMessage(ctx context.Context) error {
+	if s == nil {
+		return errors.New("ops service is nil")
+	}
+	notifier := s.dingTalkNotifier
+	if notifier == nil {
+		notifier = NewDingTalkNotifyService()
+	}
+	cfg, err := s.GetDingTalkNotificationConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if cfg == nil || strings.TrimSpace(cfg.WebhookURL) == "" {
+		return errors.New("dingtalk webhook is not configured")
+	}
+	siteName := ""
+	if s.settingRepo != nil {
+		if v, vErr := s.settingRepo.GetValue(ctx, SettingKeySiteName); vErr == nil {
+			siteName = strings.TrimSpace(v)
+		}
+	}
+	return notifier.SendTestMessage(ctx, cfg, siteName)
 }
 
 // SetOpenAIQuotaAutoPauseSettingsSink 由 wire 注入，把最新的 quota auto-pause 全局默认

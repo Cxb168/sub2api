@@ -6,7 +6,7 @@ import { opsAPI } from '@/api/admin/ops'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import Toggle from '@/components/common/Toggle.vue'
-import type { OpsAlertRuntimeSettings, EmailNotificationConfig, AlertSeverity, OpsAdvancedSettings, OpsMetricThresholds } from '../types'
+import type { OpsAlertRuntimeSettings, EmailNotificationConfig, DingTalkNotificationConfig, DingTalkNotificationConfigUpdate, AlertSeverity, OpsAdvancedSettings, OpsMetricThresholds } from '../types'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -27,6 +27,12 @@ const saving = ref(false)
 const runtimeSettings = ref<OpsAlertRuntimeSettings | null>(null)
 // 邮件通知配置
 const emailConfig = ref<EmailNotificationConfig | null>(null)
+// 钉钉告警通道配置（secret 不回显；webhook 回显脱敏值）
+const dingTalkConfig = ref<DingTalkNotificationConfig | null>(null)
+const dingTalkWebhookInput = ref('')
+const dingTalkSecretInput = ref('')
+const dingTalkAtInput = ref('')
+const testingDingTalk = ref(false)
 // 高级设置
 const advancedSettings = ref<OpsAdvancedSettings | null>(null)
 // 指标阈值配置
@@ -41,15 +47,20 @@ const metricThresholds = ref<OpsMetricThresholds>({
 async function loadAllSettings() {
   loading.value = true
   try {
-    const [runtime, email, advanced, thresholds] = await Promise.all([
+    const [runtime, email, advanced, thresholds, dingTalk] = await Promise.all([
       opsAPI.getAlertRuntimeSettings(),
       opsAPI.getEmailNotificationConfig(),
       opsAPI.getAdvancedSettings(),
-      opsAPI.getMetricThresholds()
+      opsAPI.getMetricThresholds(),
+      opsAPI.getDingTalkNotificationConfig()
     ])
     runtimeSettings.value = runtime
     emailConfig.value = email
     advancedSettings.value = advanced
+    dingTalkConfig.value = dingTalk
+    dingTalkWebhookInput.value = dingTalk?.webhook_url || ''
+    dingTalkSecretInput.value = ''
+    dingTalkAtInput.value = ''
     // 兼容旧 payload：后端未返回该字段时补默认值，保证表单可绑定
     if (advancedSettings.value && !advancedSettings.value.openai_account_quota_auto_pause) {
       advancedSettings.value.openai_account_quota_auto_pause = { default_threshold_5h: 0, default_threshold_7d: 0 }
@@ -195,6 +206,42 @@ const validation = computed(() => {
   return { valid: errors.length === 0, errors }
 })
 
+// 添加 @手机号（钉钉）
+function addDingTalkAtMobile() {
+  if (!dingTalkConfig.value) return
+  const raw = dingTalkAtInput.value.trim()
+  if (!raw) return
+  if (!/^\+?\d{6,20}$/.test(raw)) {
+    appStore.showError(t('admin.ops.dingtalk.invalidMobile'))
+    return
+  }
+  if (!dingTalkConfig.value.at_mobiles.includes(raw)) {
+    dingTalkConfig.value.at_mobiles.push(raw)
+  }
+  dingTalkAtInput.value = ''
+}
+
+function removeDingTalkAtMobile(mobile: string) {
+  if (!dingTalkConfig.value) return
+  dingTalkConfig.value.at_mobiles = dingTalkConfig.value.at_mobiles.filter((m) => m !== mobile)
+}
+
+// 测试钉钉消息（使用已保存的配置，所以需要先保存）
+async function testDingTalk() {
+  if (testingDingTalk.value) return
+  testingDingTalk.value = true
+  try {
+    await opsAPI.testDingTalkNotification()
+    appStore.showSuccess(t('admin.ops.dingtalk.testSuccess'))
+  } catch (err: any) {
+    appStore.showError(
+      err?.response?.data?.message || err?.response?.data?.detail || t('admin.ops.dingtalk.testFailed')
+    )
+  } finally {
+    testingDingTalk.value = false
+  }
+}
+
 // 保存所有配置
 async function saveAllSettings() {
   if (!validation.value.valid) {
@@ -213,11 +260,33 @@ async function saveAllSettings() {
         emailConfig.value.report.enabled = false
       }
     }
+    const dingTalkPayload: DingTalkNotificationConfigUpdate = {}
+    if (dingTalkConfig.value) {
+      dingTalkPayload.enabled = dingTalkConfig.value.enabled
+      dingTalkPayload.min_severity = dingTalkConfig.value.min_severity
+      dingTalkPayload.rate_limit_per_hour = dingTalkConfig.value.rate_limit_per_hour
+      dingTalkPayload.include_resolved_alerts = dingTalkConfig.value.include_resolved_alerts
+      dingTalkPayload.at_mobiles = dingTalkConfig.value.at_mobiles
+      dingTalkPayload.is_at_all = dingTalkConfig.value.is_at_all
+
+      // 只在用户真正改过 webhook 时提交，避免把脱敏回显值写回库。
+      const webhookInput = dingTalkWebhookInput.value.trim()
+      if (webhookInput && webhookInput !== (dingTalkConfig.value.webhook_url || '')) {
+        dingTalkPayload.webhook_url = webhookInput
+      }
+      // secret 永不回显：留空表示沿用旧值。
+      const secretInput = dingTalkSecretInput.value.trim()
+      if (secretInput) {
+        dingTalkPayload.secret = secretInput
+      }
+    }
+
     await Promise.all([
       runtimeSettings.value ? opsAPI.updateAlertRuntimeSettings(runtimeSettings.value) : Promise.resolve(),
       emailConfig.value ? opsAPI.updateEmailNotificationConfig(emailConfig.value) : Promise.resolve(),
       advancedSettings.value ? opsAPI.updateAdvancedSettings(advancedSettings.value) : Promise.resolve(),
-      opsAPI.updateMetricThresholds(metricThresholds.value)
+      opsAPI.updateMetricThresholds(metricThresholds.value),
+      dingTalkConfig.value ? opsAPI.updateDingTalkNotificationConfig(dingTalkPayload) : Promise.resolve()
     ])
     appStore.showSuccess(t('admin.ops.settings.saveSuccess'))
     emit('saved')
@@ -307,6 +376,130 @@ async function saveAllSettings() {
             <label class="input-label">{{ t('admin.ops.settings.minSeverity') }}</label>
             <Select v-model="emailConfig.alert.min_severity" :options="severityOptions" />
           </div>
+        </div>
+      </div>
+
+      <!-- 钉钉告警通道 -->
+      <div v-if="dingTalkConfig" class="rounded-2xl bg-gray-50 p-4 dark:bg-dark-700/50">
+        <div class="mb-3 flex items-center justify-between">
+          <h4 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.ops.dingtalk.title') }}</h4>
+          <button
+            class="btn btn-sm btn-secondary"
+            type="button"
+            :disabled="testingDingTalk || !dingTalkConfig.webhook_configured"
+            @click="testDingTalk"
+          >
+            {{ testingDingTalk ? t('admin.ops.dingtalk.testing') : t('admin.ops.dingtalk.test') }}
+          </button>
+        </div>
+
+        <div class="space-y-4">
+          <div class="flex items-center justify-between">
+            <div>
+              <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.ops.dingtalk.enable') }}</label>
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.dingtalk.enableHint') }}</p>
+            </div>
+            <Toggle v-model="dingTalkConfig.enabled" />
+          </div>
+
+          <template v-if="dingTalkConfig.enabled">
+            <div>
+              <label class="input-label">{{ t('admin.ops.dingtalk.webhook') }}</label>
+              <input
+                v-model="dingTalkWebhookInput"
+                type="text"
+                class="input"
+                :placeholder="t('admin.ops.dingtalk.webhookPlaceholder')"
+                data-testid="ops-dingtalk-webhook"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.dingtalk.webhookHint') }}</p>
+            </div>
+
+            <div>
+              <label class="input-label">{{ t('admin.ops.dingtalk.secret') }}</label>
+              <input
+                v-model="dingTalkSecretInput"
+                type="password"
+                autocomplete="new-password"
+                class="input"
+                :placeholder="
+                  dingTalkConfig.secret_configured
+                    ? t('admin.ops.dingtalk.secretKeep')
+                    : t('admin.ops.dingtalk.secretPlaceholder')
+                "
+                data-testid="ops-dingtalk-secret"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.dingtalk.secretHint') }}</p>
+            </div>
+
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+              <div>
+                <label class="input-label">{{ t('admin.ops.settings.minSeverity') }}</label>
+                <Select v-model="dingTalkConfig.min_severity" :options="severityOptions" />
+              </div>
+              <div>
+                <label class="input-label">{{ t('admin.ops.dingtalk.rateLimitPerHour') }}</label>
+                <input
+                  v-model.number="dingTalkConfig.rate_limit_per_hour"
+                  type="number"
+                  min="0"
+                  max="100000"
+                  class="input"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.ops.dingtalk.rateLimitHint') }}</p>
+              </div>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="font-medium text-gray-900 dark:text-white">{{ t('admin.ops.dingtalk.includeResolved') }}</label>
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.ops.dingtalk.includeResolvedHint') }}
+                </p>
+              </div>
+              <Toggle v-model="dingTalkConfig.include_resolved_alerts" />
+            </div>
+
+            <div>
+              <label class="input-label">{{ t('admin.ops.dingtalk.atMobiles') }}</label>
+              <div class="flex gap-2">
+                <input
+                  v-model="dingTalkAtInput"
+                  type="text"
+                  class="input"
+                  :placeholder="t('admin.ops.dingtalk.atMobilesPlaceholder')"
+                  @keydown.enter.prevent="addDingTalkAtMobile"
+                />
+                <button class="btn btn-secondary whitespace-nowrap" type="button" @click="addDingTalkAtMobile">
+                  {{ t('common.add') }}
+                </button>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-2">
+                <span
+                  v-for="mobile in dingTalkConfig.at_mobiles"
+                  :key="mobile"
+                  class="inline-flex items-center gap-2 rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                >
+                  {{ mobile }}
+                  <button
+                    type="button"
+                    class="text-blue-700/80 hover:text-blue-900 dark:text-blue-300"
+                    @click="removeDingTalkAtMobile(mobile)"
+                  >
+                    ×
+                  </button>
+                </span>
+              </div>
+              <div class="mt-3 flex items-center justify-between">
+                <label class="text-sm text-gray-700 dark:text-gray-300">{{ t('admin.ops.dingtalk.atAll') }}</label>
+                <Toggle v-model="dingTalkConfig.is_at_all" />
+              </div>
+            </div>
+
+            <p class="rounded-lg bg-blue-50 p-3 text-xs text-blue-800 dark:bg-blue-900/20 dark:text-blue-200">
+              {{ t('admin.ops.dingtalk.ruleHint') }}
+            </p>
+          </template>
         </div>
       </div>
 
